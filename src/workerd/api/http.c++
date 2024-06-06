@@ -1945,6 +1945,9 @@ jsg::Promise<jsg::Ref<Response>> handleHttpRedirectResponse(
   //   - Translates HEAD requests that hit 303 into HEAD requests with null bodies.
   //   - Translates all other requests that hit 303 into GET requests with null bodies.
 
+  // Save the lastKnown location from the urlList
+  auto lastKnownLocation = urlList.back().toString();
+
   auto redirectedLocation = ([&]() -> kj::Maybe<kj::Url> {
     // TODO(later): This is a bit unfortunate. Per the fetch spec, we're supposed to be
     // using standard WHATWG URL parsing to resolve the redirect URL. However, changing it
@@ -1954,8 +1957,7 @@ jsg::Promise<jsg::Ref<Response>> handleHttpRedirectResponse(
     // the existing code. Fortunately the standard parser is fast but it would be nice to
     // be able to avoid the double parse at some point.
     if (FeatureFlags::get(js).getFetchStandardUrl()) {
-      auto base = urlList.back().toString();
-      KJ_IF_SOME(parsed, jsg::Url::tryParse(location, base.asPtr())) {
+      KJ_IF_SOME(parsed, jsg::Url::tryParse(location, lastKnownLocation.asPtr())) {
         auto str = kj::str(parsed.getHref());
         return kj::Url::tryParse(str.asPtr(), kj::Url::Context::REMOTE_HREF, kj::Url::Options {
           .percentDecode = false,
@@ -2027,6 +2029,21 @@ jsg::Promise<jsg::Ref<Response>> handleHttpRedirectResponse(
     // nulled out `impl` when 303. Combined, they guarantee that we have a backing buffer.
     jsRequest->rewindBody(js);
   }
+
+  // Step 13
+  // If request’s current URL’s origin is not same origin with locationURL’s origin, then fo
+  // each headerName of CORS non-wildcard request-header name, delete headerName from request’s
+  // header list.
+  // https://fetch.spec.whatwg.org/#http-redirect-fetch step 13.
+  KJ_IF_SOME(newLoc, jsg::Url::tryParse(location, lastKnownLocation.asPtr())) {
+    KJ_IF_SOME(oldLoc, jsg::Url::tryParse(lastKnownLocation, lastKnownLocation.asPtr())) {
+      if (newLoc.getOrigin() != oldLoc.getOrigin()) {
+        // Remove the authorization header?
+        jsRequest->getHeaders()->delete_(jsg::ByteString(kj::str("authorization"))));
+      }
+    }
+  }
+
 
   // No need to wait for output locks again when following a redirect, because we didn't interact
   // with the app state in any way.
